@@ -19,9 +19,10 @@ package convert
 import (
 	"fmt"
 
-	"github.com/golang/glog"
 	"github.com/spf13/cobra"
+	"k8s.io/klog"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -29,9 +30,9 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions/resource"
 	scheme "k8s.io/kubernetes/pkg/api/legacyscheme"
 	api "k8s.io/kubernetes/pkg/apis/core"
-	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
+	"k8s.io/kubernetes/pkg/kubectl/util/templates"
 	"k8s.io/kubernetes/pkg/kubectl/validation"
 )
 
@@ -133,6 +134,14 @@ func (o *ConvertOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) (err er
 
 // RunConvert implements the generic Convert command
 func (o *ConvertOptions) RunConvert() error {
+
+	// Convert must be removed from kubectl, since kubectl can not depend on
+	// Kubernetes "internal" dependencies. These "internal" dependencies can
+	// not be removed from convert. Another way to convert a resource is to
+	// "kubectl apply" it to the cluster, then "kubectl get" at the desired version.
+	// Another possible solution is to make convert a plugin.
+	fmt.Fprintf(o.ErrOut, "kubectl convert is DEPRECATED and will be removed in a future version.\nIn order to convert, kubectl apply the object to the cluster, then kubectl get at the desired version.\n")
+
 	b := o.builder().
 		WithScheme(scheme.Scheme).
 		LocalParam(o.local)
@@ -173,7 +182,9 @@ func (o *ConvertOptions) RunConvert() error {
 		}
 	}
 
-	objects, err := asVersionedObject(infos, !singleItemImplied, specifiedOutputVersion, cmdutil.InternalVersionJSONEncoder())
+	internalEncoder := scheme.Codecs.LegacyCodec(scheme.Scheme.PrioritizedVersionsAllGroups()...)
+	internalVersionJSONEncoder := unstructured.JSONFallbackEncoder{Encoder: internalEncoder}
+	objects, err := asVersionedObject(infos, !singleItemImplied, specifiedOutputVersion, internalVersionJSONEncoder)
 	if err != nil {
 		return err
 	}
@@ -215,7 +226,7 @@ func asVersionedObject(infos []*resource.Info, forceList bool, specifiedOutputVe
 		if len(actualVersion.Version) > 0 {
 			defaultVersionInfo = fmt.Sprintf("Defaulting to %q", actualVersion.Version)
 		}
-		glog.V(1).Infof("info: the output version specified is invalid. %s\n", defaultVersionInfo)
+		klog.V(1).Infof("info: the output version specified is invalid. %s\n", defaultVersionInfo)
 	}
 	return object, nil
 }

@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/golang/glog"
 	"github.com/spf13/cobra"
+	"k8s.io/klog"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -33,11 +33,10 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/genericclioptions/printers"
 	"k8s.io/cli-runtime/pkg/genericclioptions/resource"
-	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/scheme"
 	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
-	taintutils "k8s.io/kubernetes/pkg/util/taints"
+	"k8s.io/kubernetes/pkg/kubectl/util/templates"
 )
 
 // TaintOptions have the data required to perform the taint operation
@@ -99,15 +98,9 @@ func NewCmdTaint(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.
 		Long:                  fmt.Sprintf(taintLong, validation.DNS1123SubdomainMaxLength, validation.LabelValueMaxLength),
 		Example:               taintExample,
 		Run: func(cmd *cobra.Command, args []string) {
-			if err := options.Complete(f, cmd, args); err != nil {
-				cmdutil.CheckErr(err)
-			}
-			if err := options.Validate(); err != nil {
-				cmdutil.CheckErr(cmdutil.UsageErrorf(cmd, err.Error()))
-			}
-			if err := options.RunTaint(); err != nil {
-				cmdutil.CheckErr(err)
-			}
+			cmdutil.CheckErr(options.Complete(f, cmd, args))
+			cmdutil.CheckErr(options.Validate())
+			cmdutil.CheckErr(options.RunTaint())
 		},
 		ValidArgs: validArgs,
 	}
@@ -159,7 +152,7 @@ func (o *TaintOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 		return fmt.Errorf("at least one taint update is required")
 	}
 
-	if o.taintsToAdd, o.taintsToRemove, err = taintutils.ParseTaints(taintArgs); err != nil {
+	if o.taintsToAdd, o.taintsToRemove, err = parseTaints(taintArgs); err != nil {
 		return cmdutil.UsageErrorf(cmd, err.Error())
 	}
 	o.builder = f.NewBuilder().
@@ -262,7 +255,7 @@ func (o TaintOptions) RunTaint() error {
 		patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, obj)
 		createdPatch := err == nil
 		if err != nil {
-			glog.V(2).Infof("couldn't compute patch: %v", err)
+			klog.V(2).Infof("couldn't compute patch: %v", err)
 		}
 
 		mapping := info.ResourceMapping()
@@ -281,7 +274,6 @@ func (o TaintOptions) RunTaint() error {
 		if err != nil {
 			return err
 		}
-		outputObj = cmdutil.AsDefaultVersionedOrOriginal(outputObj, mapping)
 
 		printer, err := o.ToPrinter(operation)
 		if err != nil {
@@ -298,11 +290,11 @@ func (o TaintOptions) updateTaints(obj runtime.Object) (string, error) {
 		return "", fmt.Errorf("unexpected type %T, expected Node", obj)
 	}
 	if !o.overwrite {
-		if exists := taintutils.CheckIfTaintsAlreadyExists(node.Spec.Taints, o.taintsToAdd); len(exists) != 0 {
+		if exists := checkIfTaintsAlreadyExists(node.Spec.Taints, o.taintsToAdd); len(exists) != 0 {
 			return "", fmt.Errorf("Node %s already has %v taint(s) with same effect(s) and --overwrite is false", node.Name, exists)
 		}
 	}
-	operation, newTaints, err := taintutils.ReorganizeTaints(node, o.overwrite, o.taintsToAdd, o.taintsToRemove)
+	operation, newTaints, err := reorganizeTaints(node, o.overwrite, o.taintsToAdd, o.taintsToRemove)
 	if err != nil {
 		return "", err
 	}

@@ -30,12 +30,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/rest"
-	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/polymorphichelpers"
 	"k8s.io/kubernetes/pkg/kubectl/scheme"
 	"k8s.io/kubernetes/pkg/kubectl/util"
 	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
+	"k8s.io/kubernetes/pkg/kubectl/util/templates"
 )
 
 const (
@@ -181,7 +181,7 @@ func (o *LogsOptions) ToLogOptions() (*corev1.PodLogOptions, error) {
 		logOptions.SinceSeconds = &sec
 	}
 
-	if len(o.Selector) > 0 && o.Tail != -1 {
+	if len(o.Selector) > 0 && o.Tail == -1 {
 		logOptions.TailLines = &selectorTail
 	} else if o.Tail != -1 {
 		logOptions.TailLines = &o.Tail

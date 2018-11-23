@@ -29,11 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	utilfeaturetesting "k8s.io/apiserver/pkg/util/feature/testing"
 	"k8s.io/kubernetes/pkg/features"
 	priorityutil "k8s.io/kubernetes/pkg/scheduler/algorithm/priorities/util"
 	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
-	"k8s.io/kubernetes/pkg/scheduler/util"
-	schedutil "k8s.io/kubernetes/pkg/scheduler/util"
 )
 
 func deepEqualWithoutGeneration(t *testing.T, testcase int, actual, expected *schedulercache.NodeInfo) {
@@ -67,8 +66,8 @@ func (b *hostPortInfoBuilder) add(protocol, ip string, port int32) *hostPortInfo
 	return b
 }
 
-func (b *hostPortInfoBuilder) build() schedutil.HostPortInfo {
-	res := make(schedutil.HostPortInfo)
+func (b *hostPortInfoBuilder) build() schedulercache.HostPortInfo {
+	res := make(schedulercache.HostPortInfo)
 	for _, param := range b.inputs {
 		res.Add(param.ip, param.protocol, param.port)
 	}
@@ -78,7 +77,7 @@ func (b *hostPortInfoBuilder) build() schedutil.HostPortInfo {
 func newNodeInfo(requestedResource *schedulercache.Resource,
 	nonzeroRequest *schedulercache.Resource,
 	pods []*v1.Pod,
-	usedPorts util.HostPortInfo,
+	usedPorts schedulercache.HostPortInfo,
 	imageStates map[string]*schedulercache.ImageStateSummary,
 ) *schedulercache.NodeInfo {
 	nodeInfo := schedulercache.NewNodeInfo(pods...)
@@ -94,7 +93,7 @@ func newNodeInfo(requestedResource *schedulercache.Resource,
 // on node level.
 func TestAssumePodScheduled(t *testing.T) {
 	// Enable volumesOnNodeForBalancing to do balanced resource allocation
-	utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("%s=true", features.BalanceAttachedNodeVolumes))
+	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.BalanceAttachedNodeVolumes, true)()
 	nodeName := "node"
 	testPods := []*v1.Pod{
 		makeBasePod(t, nodeName, "test", "100m", "500", "", []v1.ContainerPort{{HostIP: "127.0.0.1", HostPort: 80, Protocol: "TCP"}}),
@@ -242,7 +241,7 @@ func assumeAndFinishBinding(cache *schedulerCache, pod *v1.Pod, assumedTime time
 // The removal will be reflected in node info.
 func TestExpirePod(t *testing.T) {
 	// Enable volumesOnNodeForBalancing to do balanced resource allocation
-	utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("%s=true", features.BalanceAttachedNodeVolumes))
+	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.BalanceAttachedNodeVolumes, true)()
 	nodeName := "node"
 	testPods := []*v1.Pod{
 		makeBasePod(t, nodeName, "test-1", "100m", "500", "", []v1.ContainerPort{{HostIP: "127.0.0.1", HostPort: 80, Protocol: "TCP"}}),
@@ -301,7 +300,7 @@ func TestExpirePod(t *testing.T) {
 // The pod info should still exist after manually expiring unconfirmed pods.
 func TestAddPodWillConfirm(t *testing.T) {
 	// Enable volumesOnNodeForBalancing to do balanced resource allocation
-	utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("%s=true", features.BalanceAttachedNodeVolumes))
+	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.BalanceAttachedNodeVolumes, true)()
 	nodeName := "node"
 	now := time.Now()
 	ttl := 10 * time.Second
@@ -457,7 +456,7 @@ func TestAddPodWillReplaceAssumed(t *testing.T) {
 // TestAddPodAfterExpiration tests that a pod being Add()ed will be added back if expired.
 func TestAddPodAfterExpiration(t *testing.T) {
 	// Enable volumesOnNodeForBalancing to do balanced resource allocation
-	utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("%s=true", features.BalanceAttachedNodeVolumes))
+	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.BalanceAttachedNodeVolumes, true)()
 	nodeName := "node"
 	ttl := 10 * time.Second
 	basePod := makeBasePod(t, nodeName, "test", "100m", "500", "", []v1.ContainerPort{{HostIP: "127.0.0.1", HostPort: 80, Protocol: "TCP"}})
@@ -506,7 +505,7 @@ func TestAddPodAfterExpiration(t *testing.T) {
 // TestUpdatePod tests that a pod will be updated if added before.
 func TestUpdatePod(t *testing.T) {
 	// Enable volumesOnNodeForBalancing to do balanced resource allocation
-	utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("%s=true", features.BalanceAttachedNodeVolumes))
+	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.BalanceAttachedNodeVolumes, true)()
 	nodeName := "node"
 	ttl := 10 * time.Second
 	testPods := []*v1.Pod{
@@ -632,7 +631,7 @@ func TestUpdatePodAndGet(t *testing.T) {
 // TestExpireAddUpdatePod test the sequence that a pod is expired, added, then updated
 func TestExpireAddUpdatePod(t *testing.T) {
 	// Enable volumesOnNodeForBalancing to do balanced resource allocation
-	utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("%s=true", features.BalanceAttachedNodeVolumes))
+	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.BalanceAttachedNodeVolumes, true)()
 	nodeName := "node"
 	ttl := 10 * time.Second
 	testPods := []*v1.Pod{
@@ -729,7 +728,7 @@ func makePodWithEphemeralStorage(nodeName, ephemeralStorage string) *v1.Pod {
 
 func TestEphemeralStorageResource(t *testing.T) {
 	// Enable volumesOnNodeForBalancing to do balanced resource allocation
-	utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("%s=true", features.BalanceAttachedNodeVolumes))
+	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.BalanceAttachedNodeVolumes, true)()
 	nodeName := "node"
 	podE := makePodWithEphemeralStorage(nodeName, "500")
 	tests := []struct {
@@ -747,7 +746,7 @@ func TestEphemeralStorageResource(t *testing.T) {
 					Memory:   priorityutil.DefaultMemoryRequest,
 				},
 				[]*v1.Pod{podE},
-				schedutil.HostPortInfo{},
+				schedulercache.HostPortInfo{},
 				make(map[string]*schedulercache.ImageStateSummary),
 			),
 		},
@@ -774,7 +773,7 @@ func TestEphemeralStorageResource(t *testing.T) {
 // TestRemovePod tests after added pod is removed, its information should also be subtracted.
 func TestRemovePod(t *testing.T) {
 	// Enable volumesOnNodeForBalancing to do balanced resource allocation
-	utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("%s=true", features.BalanceAttachedNodeVolumes))
+	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.BalanceAttachedNodeVolumes, true)()
 	nodeName := "node"
 	basePod := makeBasePod(t, nodeName, "test", "100m", "500", "", []v1.ContainerPort{{HostIP: "127.0.0.1", HostPort: 80, Protocol: "TCP"}})
 	tests := []struct {
@@ -1128,7 +1127,7 @@ func BenchmarkList1kNodes30kPods(b *testing.B) {
 
 func BenchmarkUpdate1kNodes30kPods(b *testing.B) {
 	// Enable volumesOnNodeForBalancing to do balanced resource allocation
-	utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("%s=true", features.BalanceAttachedNodeVolumes))
+	defer utilfeaturetesting.SetFeatureGateDuringTest(nil, utilfeature.DefaultFeatureGate, features.BalanceAttachedNodeVolumes, true)()
 	cache := setupCacheOf1kNodes30kPods(b)
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {

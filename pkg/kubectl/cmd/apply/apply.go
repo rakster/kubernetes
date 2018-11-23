@@ -17,15 +17,14 @@ limitations under the License.
 package apply
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/jonboulle/clockwork"
 	"github.com/spf13/cobra"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -42,15 +41,17 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/genericclioptions/printers"
 	"k8s.io/cli-runtime/pkg/genericclioptions/resource"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/klog"
 	oapi "k8s.io/kube-openapi/pkg/util/proto"
 	"k8s.io/kubernetes/pkg/kubectl"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/delete"
-	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/util/openapi"
 	"k8s.io/kubernetes/pkg/kubectl/scheme"
 	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
+	"k8s.io/kubernetes/pkg/kubectl/util/templates"
 	"k8s.io/kubernetes/pkg/kubectl/validation"
 )
 
@@ -76,11 +77,12 @@ type ApplyOptions struct {
 	PruneWhitelist             []string
 	ShouldIncludeUninitialized bool
 
-	Validator     validation.Schema
-	Builder       *resource.Builder
-	Mapper        meta.RESTMapper
-	DynamicClient dynamic.Interface
-	OpenAPISchema openapi.Resources
+	Validator       validation.Schema
+	Builder         *resource.Builder
+	Mapper          meta.RESTMapper
+	DynamicClient   dynamic.Interface
+	DiscoveryClient discovery.DiscoveryInterface
+	OpenAPISchema   openapi.Resources
 
 	Namespace        string
 	EnforceNamespace bool
@@ -211,6 +213,11 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 		return err
 	}
 
+	o.DiscoveryClient, err = f.ToDiscoveryClient()
+	if err != nil {
+		return err
+	}
+
 	dynamicClient, err := f.DynamicClient()
 	if err != nil {
 		return err
@@ -293,6 +300,11 @@ func (o *ApplyOptions) Run() error {
 		openapiSchema = o.OpenAPISchema
 	}
 
+	dryRunVerifier := &DryRunVerifier{
+		Finder:        cmdutil.NewCRDFinder(cmdutil.CRDFromDynamic(o.DynamicClient)),
+		OpenAPIGetter: o.DiscoveryClient,
+	}
+
 	// include the uninitialized objects by default if --prune is true
 	// unless explicitly set --include-uninitialized=false
 	r := o.Builder.
@@ -336,7 +348,7 @@ func (o *ApplyOptions) Run() error {
 		}
 
 		if err := o.Recorder.Record(info.Object); err != nil {
-			glog.V(4).Infof("error recording current command: %v", err)
+			klog.V(4).Infof("error recording current command: %v", err)
 		}
 
 		// Get the modified configuration of the object. Embed the result
@@ -354,6 +366,13 @@ func (o *ApplyOptions) Run() error {
 			if !errors.IsNotFound(err) {
 				return cmdutil.AddSourceToErr(fmt.Sprintf("retrieving current configuration of:\n%s\nfrom server for:", info.String()), info.Source, err)
 			}
+			// If server-dry-run is requested but the type doesn't support it, fail right away.
+			if o.ServerDryRun {
+				if err := dryRunVerifier.HasSupport(info.Mapping.GroupVersionKind); err != nil {
+					return err
+				}
+			}
+
 			// Create the resource if it doesn't exist
 			// First, update the annotation used by kubectl apply
 			if err := kubectl.CreateApplyAnnotation(info.Object, unstructured.UnstructuredJSONScheme); err != nil {
@@ -371,12 +390,13 @@ func (o *ApplyOptions) Run() error {
 					return cmdutil.AddSourceToErr("creating", info.Source, err)
 				}
 				info.Refresh(obj, true)
-				metadata, err := meta.Accessor(info.Object)
-				if err != nil {
-					return err
-				}
-				visitedUids.Insert(string(metadata.GetUID()))
 			}
+
+			metadata, err := meta.Accessor(info.Object)
+			if err != nil {
+				return err
+			}
+			visitedUids.Insert(string(metadata.GetUID()))
 
 			count++
 
@@ -392,12 +412,13 @@ func (o *ApplyOptions) Run() error {
 			return printer.PrintObj(info.Object, o.Out)
 		}
 
-		if !o.DryRun {
-			metadata, err := meta.Accessor(info.Object)
-			if err != nil {
-				return err
-			}
+		metadata, err := meta.Accessor(info.Object)
+		if err != nil {
+			return err
+		}
+		visitedUids.Insert(string(metadata.GetUID()))
 
+		if !o.DryRun {
 			annotationMap := metadata.GetAnnotations()
 			if _, ok := annotationMap[corev1.LastAppliedConfigAnnotation]; !ok {
 				fmt.Fprintf(o.ErrOut, warningNoLastAppliedConfigAnnotation, o.cmdBaseName)
@@ -416,6 +437,7 @@ func (o *ApplyOptions) Run() error {
 				GracePeriod:   o.DeleteOptions.GracePeriod,
 				ServerDryRun:  o.ServerDryRun,
 				OpenapiSchema: openapiSchema,
+				Retries:       maxPatchRetry,
 			}
 
 			patchBytes, patchedObject, err := patcher.Patch(info.Object, modified, info.Source, info.Namespace, info.Name, o.ErrOut)
@@ -424,8 +446,6 @@ func (o *ApplyOptions) Run() error {
 			}
 
 			info.Refresh(patchedObject, true)
-
-			visitedUids.Insert(string(metadata.GetUID()))
 
 			if string(patchBytes) == "{}" && !printObject {
 				count++
@@ -681,7 +701,68 @@ type Patcher struct {
 	GracePeriod  int
 	ServerDryRun bool
 
+	// If set, forces the patch against a specific resourceVersion
+	ResourceVersion *string
+
+	// Number of retries to make if the patch fails with conflict
+	Retries int
+
 	OpenapiSchema openapi.Resources
+}
+
+// DryRunVerifier verifies if a given group-version-kind supports DryRun
+// against the current server. Sending dryRun requests to apiserver that
+// don't support it will result in objects being unwillingly persisted.
+//
+// It reads the OpenAPI to see if the given GVK supports dryRun. If the
+// GVK can not be found, we assume that CRDs will have the same level of
+// support as "namespaces", and non-CRDs will not be supported. We
+// delay the check for CRDs as much as possible though, since it
+// requires an extra round-trip to the server.
+type DryRunVerifier struct {
+	Finder        cmdutil.CRDFinder
+	OpenAPIGetter discovery.OpenAPISchemaInterface
+}
+
+// HasSupport verifies if the given gvk supports DryRun. An error is
+// returned if it doesn't.
+func (v *DryRunVerifier) HasSupport(gvk schema.GroupVersionKind) error {
+	oapi, err := v.OpenAPIGetter.OpenAPISchema()
+	if err != nil {
+		return fmt.Errorf("failed to download openapi: %v", err)
+	}
+	supports, err := openapi.SupportsDryRun(oapi, gvk)
+	if err != nil {
+		// We assume that we couldn't find the type, then check for namespace:
+		supports, _ = openapi.SupportsDryRun(oapi, schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Namespace"})
+		// If namespace supports dryRun, then we will support dryRun for CRDs only.
+		if supports {
+			supports, err = v.Finder.HasCRD(gvk.GroupKind())
+			if err != nil {
+				return fmt.Errorf("failed to check CRD: %v", err)
+			}
+		}
+	}
+	if !supports {
+		return fmt.Errorf("%v doesn't support dry-run", gvk)
+	}
+	return nil
+}
+
+func addResourceVersion(patch []byte, rv string) ([]byte, error) {
+	var patchMap map[string]interface{}
+	err := json.Unmarshal(patch, &patchMap)
+	if err != nil {
+		return nil, err
+	}
+	u := unstructured.Unstructured{Object: patchMap}
+	a, err := meta.Accessor(&u)
+	if err != nil {
+		return nil, err
+	}
+	a.SetResourceVersion(rv)
+
+	return json.Marshal(patchMap)
 }
 
 func (p *Patcher) patchSimple(obj runtime.Object, modified []byte, source, namespace, name string, errOut io.Writer) ([]byte, runtime.Object, error) {
@@ -755,6 +836,13 @@ func (p *Patcher) patchSimple(obj runtime.Object, modified []byte, source, names
 		return patch, obj, nil
 	}
 
+	if p.ResourceVersion != nil {
+		patch, err = addResourceVersion(patch, *p.ResourceVersion)
+		if err != nil {
+			return nil, nil, cmdutil.AddSourceToErr("Failed to insert resourceVersion in patch", source, err)
+		}
+	}
+
 	options := metav1.UpdateOptions{}
 	if p.ServerDryRun {
 		options.DryRun = []string{metav1.DryRunAll}
@@ -767,7 +855,10 @@ func (p *Patcher) patchSimple(obj runtime.Object, modified []byte, source, names
 func (p *Patcher) Patch(current runtime.Object, modified []byte, source, namespace, name string, errOut io.Writer) ([]byte, runtime.Object, error) {
 	var getErr error
 	patchBytes, patchObject, err := p.patchSimple(current, modified, source, namespace, name, errOut)
-	for i := 1; i <= maxPatchRetry && errors.IsConflict(err); i++ {
+	if p.Retries == 0 {
+		p.Retries = maxPatchRetry
+	}
+	for i := 1; i <= p.Retries && errors.IsConflict(err); i++ {
 		if i > triesBeforeBackOff {
 			p.BackOff.Sleep(backOffPeriod)
 		}

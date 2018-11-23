@@ -41,7 +41,7 @@ import (
 	"time"
 
 	"github.com/elazarl/goproxy"
-	"github.com/ghodss/yaml"
+	"sigs.k8s.io/yaml"
 
 	"k8s.io/api/core/v1"
 	rbacv1beta1 "k8s.io/api/rbac/v1beta1"
@@ -79,6 +79,8 @@ const (
 	simplePodPort            = 80
 	pausePodSelector         = "name=pause"
 	pausePodName             = "pause"
+	busyboxPodSelector       = "app=busybox1"
+	busyboxPodName           = "busybox1"
 	runJobTimeout            = 5 * time.Minute
 	kubeCtlManifestPath      = "test/e2e/testing-manifests/kubectl"
 	redisControllerFilename  = "redis-master-controller.json.in"
@@ -845,6 +847,13 @@ metadata:
 		})
 	})
 
+	framework.KubeDescribe("Kubectl cluster-info dump", func() {
+		It("should check if cluster-info dump succeeds", func() {
+			By("running cluster-info dump")
+			framework.RunKubectlOrDie("cluster-info", "dump")
+		})
+	})
+
 	framework.KubeDescribe("Kubectl describe", func() {
 		/*
 			Release : v1.9
@@ -1054,7 +1063,7 @@ metadata:
 		/*
 			Release : v1.9
 			Testname: Kubectl, label update
-			Description: When a Pod is running, update a Label using ‘kubectl label’ command. The label MUST be created in the Pod. A ‘kubectl get pod’ with -l option on the container MUST verify that the label can be read back. Use ‘kubectl label label-’ to remove the label. Kubetctl get pod’ with -l option SHOULD no list the deleted label as the label is removed.
+			Description: When a Pod is running, update a Label using ‘kubectl label’ command. The label MUST be created in the Pod. A ‘kubectl get pod’ with -l option on the container MUST verify that the label can be read back. Use ‘kubectl label label-’ to remove the label. ‘kubectl get pod’ with -l option SHOULD not list the deleted label as the label is removed.
 		*/
 		framework.ConformanceIt("should update the label on a resource ", func() {
 			labelName := "testing-label"
@@ -1078,6 +1087,46 @@ metadata:
 		})
 	})
 
+	framework.KubeDescribe("Kubectl copy", func() {
+		var podYaml string
+		var nsFlag string
+		BeforeEach(func() {
+			By("creating the pod")
+			nsFlag = fmt.Sprintf("--namespace=%v", ns)
+			podYaml = substituteImageName(string(readTestFileOrDie("busybox-pod.yaml")))
+			framework.RunKubectlOrDieInput(podYaml, "create", "-f", "-", nsFlag)
+			Expect(framework.CheckPodsRunningReady(c, ns, []string{busyboxPodName}, framework.PodStartTimeout)).To(BeTrue())
+		})
+		AfterEach(func() {
+			cleanupKubectlInputs(podYaml, ns, busyboxPodSelector)
+		})
+
+		/*
+			Release : v1.12
+			Testname: Kubectl, copy
+			Description: When a Pod is running, copy a known file from it to a temporary local destination.
+		*/
+		It("should copy a file from a running Pod", func() {
+			remoteContents := "foobar\n"
+			podSource := fmt.Sprintf("%s:/root/foo/bar/foo.bar", busyboxPodName)
+			tempDestination, err := ioutil.TempFile(os.TempDir(), "copy-foobar")
+			if err != nil {
+				framework.Failf("Failed creating temporary destination file: %v", err)
+			}
+
+			By("specifying a remote filepath " + podSource + " on the pod")
+			framework.RunKubectlOrDie("cp", podSource, tempDestination.Name(), nsFlag)
+			By("verifying that the contents of the remote file " + podSource + " have been copied to a local file " + tempDestination.Name())
+			localData, err := ioutil.ReadAll(tempDestination)
+			if err != nil {
+				framework.Failf("Failed reading temporary local file: %v", err)
+			}
+			if string(localData) != remoteContents {
+				framework.Failf("Failed copying remote file contents. Expected %s but got %s", remoteContents, string(localData))
+			}
+		})
+	})
+
 	framework.KubeDescribe("Kubectl logs", func() {
 		var nsFlag string
 		var rc string
@@ -1096,10 +1145,10 @@ metadata:
 			Release : v1.9
 			Testname: Kubectl, logs
 			Description: When a Pod is running then it MUST generate logs.
-			Starting a Pod should have a log line indicating the server is running and ready to accept connections. 			   Also log command options MUST work as expected and described below.
+			Starting a Pod should have a log line indicating the server is running and ready to accept connections. Also log command options MUST work as expected and described below.
 				‘kubectl log -tail=1’ should generate a output of one line, the last line in the log.
 				‘kubectl --limit-bytes=1’ should generate a single byte output.
-				‘kubectl --tail=1 --timestamp should genrate one line with timestamp in RFC3339 format
+				‘kubectl --tail=1 --timestamp should generate one line with timestamp in RFC3339 format
 				‘kubectl --since=1s’ should output logs that are only 1 second older from now
 				‘kubectl --since=24h’ should output logs that are only 1 day older from now
 		*/
@@ -1369,7 +1418,7 @@ metadata:
 		/*
 			Release : v1.9
 			Testname: Kubectl, run deployment
-			Description: Command ‘kubectl run’ MUST create a job, with --generator=deployment, when a image name is specified in the run command. After the run command there SHOULD be a deployment that should exist with one container running the specified image. Also there SHOULD be a Pod that is controlled by this deployment, with a container running the specified image.
+			Description: Command ‘kubectl run’ MUST create a deployment, with --generator=deployment, when a image name is specified in the run command. After the run command there SHOULD be a deployment that should exist with one container running the specified image. Also there SHOULD be a Pod that is controlled by this deployment, with a container running the specified image.
 		*/
 		framework.ConformanceIt("should create a deployment from an image ", func() {
 			By("running the image " + nginxImage)
@@ -1414,7 +1463,7 @@ metadata:
 		/*
 			Release : v1.9
 			Testname: Kubectl, run job
-			Description: Command ‘kubectl run’ MUST create a deployment, with --generator=job, when a image name is specified in the run command. After the run command there SHOULD be a job that should exist with one container running the specified image. Also there SHOULD be a restart policy on the job spec that SHOULD match the command line.
+			Description: Command ‘kubectl run’ MUST create a job, with --generator=job, when a image name is specified in the run command. After the run command there SHOULD be a job that should exist with one container running the specified image. Also there SHOULD be a restart policy on the job spec that SHOULD match the command line.
 		*/
 		framework.ConformanceIt("should create a job from an image when restart is OnFailure ", func() {
 			By("running the image " + nginxImage)
@@ -1619,7 +1668,7 @@ metadata:
 		/*
 			Release : v1.9
 			Testname: Kubectl, proxy socket
-			Description: Start a proxy server on by running ‘kubectl proxy’ with --unix-socket=<some path>. Call the proxy server by requesting api versions from  http://locahost:0/api. The proxy server MUST provide atleast one version string
+			Description: Start a proxy server on by running ‘kubectl proxy’ with --unix-socket=<some path>. Call the proxy server by requesting api versions from  http://locahost:0/api. The proxy server MUST provide at least one version string
 		*/
 		framework.ConformanceIt("should support --unix-socket=/path ", func() {
 			By("Starting the proxy")

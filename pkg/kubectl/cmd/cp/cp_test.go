@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -35,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/rest/fake"
+	kexec "k8s.io/kubernetes/pkg/kubectl/cmd/exec"
 	cmdtesting "k8s.io/kubernetes/pkg/kubectl/cmd/testing"
 	"k8s.io/kubernetes/pkg/kubectl/scheme"
 )
@@ -121,6 +123,62 @@ func TestGetPrefix(t *testing.T) {
 	}
 	for _, test := range tests {
 		out := getPrefix(test.input)
+		if out != test.expected {
+			t.Errorf("expected: %s, saw: %s", test.expected, out)
+		}
+	}
+}
+
+func TestStripPathShortcuts(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "test single path shortcut prefix",
+			input:    "../foo/bar",
+			expected: "foo/bar",
+		},
+		{
+			name:     "test multiple path shortcuts",
+			input:    "../../foo/bar",
+			expected: "foo/bar",
+		},
+		{
+			name:     "test multiple path shortcuts with absolute path",
+			input:    "/tmp/one/two/../../foo/bar",
+			expected: "tmp/foo/bar",
+		},
+		{
+			name:     "test multiple path shortcuts with no named directory",
+			input:    "../../",
+			expected: "",
+		},
+		{
+			name:     "test multiple path shortcuts with no named directory and no trailing slash",
+			input:    "../..",
+			expected: "",
+		},
+		{
+			name:     "test multiple path shortcuts with absolute path and filename containing leading dots",
+			input:    "/tmp/one/two/../../foo/..bar",
+			expected: "tmp/foo/..bar",
+		},
+		{
+			name:     "test multiple path shortcuts with no named directory and filename containing leading dots",
+			input:    "../...foo",
+			expected: "...foo",
+		},
+		{
+			name:     "test filename containing leading dots",
+			input:    "...foo",
+			expected: "...foo",
+		},
+	}
+
+	for _, test := range tests {
+		out := stripPathShortcuts(test.input)
 		if out != test.expected {
 			t.Errorf("expected: %s, saw: %s", test.expected, out)
 		}
@@ -573,7 +631,7 @@ func TestCopyToPod(t *testing.T) {
 		}
 		opts.Complete(tf, cmd)
 		t.Run(name, func(t *testing.T) {
-			err = opts.copyToPod(src, dest)
+			err = opts.copyToPod(src, dest, &kexec.ExecOptions{})
 			//If error is NotFound error , it indicates that the
 			//request has been sent correctly.
 			//Treat this as no error.
@@ -582,6 +640,68 @@ func TestCopyToPod(t *testing.T) {
 			}
 			if !test.expectedErr && !errors.IsNotFound(err) {
 				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestCopyToPodNoPreserve(t *testing.T) {
+	tf := cmdtesting.NewTestFactory().WithNamespace("test")
+	ns := scheme.Codecs
+	codec := scheme.Codecs.LegacyCodec(scheme.Scheme.PrioritizedVersionsAllGroups()...)
+
+	tf.Client = &fake.RESTClient{
+		GroupVersion:         schema.GroupVersion{Group: "", Version: "v1"},
+		NegotiatedSerializer: ns,
+		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
+			responsePod := &v1.Pod{}
+			return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: ioutil.NopCloser(bytes.NewReader([]byte(runtime.EncodeOrDie(codec, responsePod))))}, nil
+		}),
+	}
+
+	tf.ClientConfigVal = cmdtesting.DefaultClientConfig()
+	ioStreams, _, _, _ := genericclioptions.NewTestIOStreams()
+
+	cmd := NewCmdCp(tf, ioStreams)
+
+	srcFile, err := ioutil.TempDir("", "test")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+		t.FailNow()
+	}
+	defer os.RemoveAll(srcFile)
+
+	tests := map[string]struct {
+		expectedCmd []string
+		nopreserve  bool
+	}{
+		"copy to pod no preserve user and permissions": {
+			expectedCmd: []string{"tar", "--no-same-permissions", "--no-same-owner", "-xf", "-", "-C", "."},
+			nopreserve:  true,
+		},
+		"copy to pod preserve user and permissions": {
+			expectedCmd: []string{"tar", "-xf", "-", "-C", "."},
+			nopreserve:  false,
+		},
+	}
+	opts := NewCopyOptions(ioStreams)
+	src := fileSpec{
+		File: srcFile,
+	}
+	dest := fileSpec{
+		PodNamespace: "pod-ns",
+		PodName:      "pod-name",
+		File:         "foo",
+	}
+	opts.Complete(tf, cmd)
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			options := &kexec.ExecOptions{}
+			opts.NoPreserve = test.nopreserve
+			err = opts.copyToPod(src, dest, options)
+			if !(reflect.DeepEqual(test.expectedCmd, options.Command)) {
+				t.Errorf("expected cmd: %v, got: %v", test.expectedCmd, options.Command)
 			}
 		})
 	}

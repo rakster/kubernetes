@@ -22,8 +22,8 @@ import (
 	"io"
 
 	jsonpatch "github.com/evanphx/json-patch"
-	"github.com/golang/glog"
 	"github.com/spf13/cobra"
+	"k8s.io/klog"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,10 +35,10 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions/printers"
 	"k8s.io/cli-runtime/pkg/genericclioptions/resource"
 	"k8s.io/kubernetes/pkg/kubectl"
-	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/scheme"
 	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
+	"k8s.io/kubernetes/pkg/kubectl/util/templates"
 )
 
 // AnnotateOptions have the data required to perform the annotate operation
@@ -245,7 +245,7 @@ func (o AnnotateOptions) RunAnnotate() error {
 
 	// only apply resource version locking on a single resource.
 	// we must perform this check after o.builder.Do() as
-	// []o.resources can not not accurately return the proper number
+	// []o.resources can not accurately return the proper number
 	// of resources when they are not passed in "resource/name" format.
 	if !singleItemImpliedResource && len(o.resourceVersion) > 0 {
 		return fmt.Errorf("--resource-version may only be used with a single resource")
@@ -271,7 +271,7 @@ func (o AnnotateOptions) RunAnnotate() error {
 				return err
 			}
 			if err := o.Recorder.Record(info.Object); err != nil {
-				glog.V(4).Infof("error recording current command: %v", err)
+				klog.V(4).Infof("error recording current command: %v", err)
 			}
 			if err := o.updateAnnotations(obj); err != nil {
 				return err
@@ -283,7 +283,7 @@ func (o AnnotateOptions) RunAnnotate() error {
 			patchBytes, err := jsonpatch.CreateMergePatch(oldData, newData)
 			createdPatch := err == nil
 			if err != nil {
-				glog.V(2).Infof("couldn't compute patch: %v", err)
+				klog.V(2).Infof("couldn't compute patch: %v", err)
 			}
 
 			mapping := info.ResourceMapping()

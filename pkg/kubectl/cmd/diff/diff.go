@@ -23,24 +23,25 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ghodss/yaml"
 	"github.com/jonboulle/clockwork"
 	"github.com/spf13/cobra"
-
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/genericclioptions/resource"
+	"k8s.io/klog"
 	"k8s.io/kubernetes/pkg/kubectl"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/apply"
-	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/util/openapi"
 	"k8s.io/kubernetes/pkg/kubectl/scheme"
 	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
+	"k8s.io/kubernetes/pkg/kubectl/util/templates"
 	"k8s.io/utils/exec"
+	"sigs.k8s.io/yaml"
 )
 
 var (
@@ -50,7 +51,7 @@ var (
 
 		Output is always YAML.
 
-		KUBERNETES_EXTERNAL_DIFF environment variable can be used to select your own
+		KUBECTL_EXTERNAL_DIFF environment variable can be used to select your own
 		diff command. By default, the "diff" command available in your path will be
 		run with "-u" (unicode) and "-N" (treat new files as empty) options.`))
 	diffExample = templates.Examples(i18n.T(`
@@ -60,6 +61,9 @@ var (
 		# Diff file read from stdin
 		cat service.yaml | kubectl diff -f -`))
 )
+
+// Number of times we try to diff before giving-up
+const maxRetries = 4
 
 type DiffOptions struct {
 	FilenameOptions resource.FilenameOptions
@@ -98,7 +102,7 @@ func NewCmdDiff(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.C
 }
 
 // DiffProgram finds and run the diff program. The value of
-// KUBERNETES_EXTERNAL_DIFF environment variable will be used a diff
+// KUBECTL_EXTERNAL_DIFF environment variable will be used a diff
 // program. By default, `diff(1)` will be used.
 type DiffProgram struct {
 	Exec exec.Interface
@@ -107,7 +111,7 @@ type DiffProgram struct {
 
 func (d *DiffProgram) getCommand(args ...string) exec.Cmd {
 	diff := ""
-	if envDiff := os.Getenv("KUBERNETES_EXTERNAL_DIFF"); envDiff != "" {
+	if envDiff := os.Getenv("KUBECTL_EXTERNAL_DIFF"); envDiff != "" {
 		diff = envDiff
 	} else {
 		diff = "diff"
@@ -123,8 +127,7 @@ func (d *DiffProgram) getCommand(args ...string) exec.Cmd {
 
 // Run runs the detected diff program. `from` and `to` are the directory to diff.
 func (d *DiffProgram) Run(from, to string) error {
-	d.getCommand(from, to).Run() // Ignore diff return code
-	return nil
+	return d.getCommand(from, to).Run()
 }
 
 // Printer is used to print an object.
@@ -230,6 +233,7 @@ type InfoObject struct {
 	Info     *resource.Info
 	Encoder  runtime.Encoder
 	OpenAPI  openapi.Resources
+	Force    bool
 }
 
 var _ Object = &InfoObject{}
@@ -253,6 +257,16 @@ func (obj InfoObject) Merged() (runtime.Object, error) {
 		)
 	}
 
+	var resourceVersion *string
+	if !obj.Force {
+		accessor, err := meta.Accessor(obj.Info.Object)
+		if err != nil {
+			return nil, err
+		}
+		str := accessor.GetResourceVersion()
+		resourceVersion = &str
+	}
+
 	modified, err := kubectl.GetModifiedConfiguration(obj.LocalObj, false, unstructured.UnstructuredJSONScheme)
 	if err != nil {
 		return nil, err
@@ -261,12 +275,13 @@ func (obj InfoObject) Merged() (runtime.Object, error) {
 	// This is using the patcher from apply, to keep the same behavior.
 	// We plan on replacing this with server-side apply when it becomes available.
 	patcher := &apply.Patcher{
-		Mapping:       obj.Info.Mapping,
-		Helper:        resource.NewHelper(obj.Info.Client, obj.Info.Mapping),
-		Overwrite:     true,
-		BackOff:       clockwork.NewRealClock(),
-		ServerDryRun:  true,
-		OpenapiSchema: obj.OpenAPI,
+		Mapping:         obj.Info.Mapping,
+		Helper:          resource.NewHelper(obj.Info.Client, obj.Info.Mapping),
+		Overwrite:       true,
+		BackOff:         clockwork.NewRealClock(),
+		ServerDryRun:    true,
+		OpenapiSchema:   obj.OpenAPI,
+		ResourceVersion: resourceVersion,
 	}
 
 	_, result, err := patcher.Patch(obj.Info.Object, modified, obj.Info.Source, obj.Info.Namespace, obj.Info.Name, nil)
@@ -321,6 +336,10 @@ func (d *Differ) TearDown() {
 	d.To.Dir.Delete()   // Ignore error
 }
 
+func isConflict(err error) bool {
+	return err != nil && errors.IsConflict(err)
+}
+
 // RunDiff uses the factory to parse file arguments, find the version to
 // diff, and find each Info object for each files, and runs against the
 // differ.
@@ -328,6 +347,21 @@ func RunDiff(f cmdutil.Factory, diff *DiffProgram, options *DiffOptions) error {
 	schema, err := f.OpenAPISchema()
 	if err != nil {
 		return err
+	}
+
+	discovery, err := f.ToDiscoveryClient()
+	if err != nil {
+		return err
+	}
+
+	dynamic, err := f.DynamicClient()
+	if err != nil {
+		return err
+	}
+
+	dryRunVerifier := &apply.DryRunVerifier{
+		Finder:        cmdutil.NewCRDFinder(cmdutil.CRDFromDynamic(dynamic)),
+		OpenAPIGetter: discovery,
 	}
 
 	differ, err := NewDiffer("LIVE", "MERGED")
@@ -358,29 +392,45 @@ func RunDiff(f cmdutil.Factory, diff *DiffProgram, options *DiffOptions) error {
 			return err
 		}
 
+		if err := dryRunVerifier.HasSupport(info.Mapping.GroupVersionKind); err != nil {
+			return err
+		}
+
 		local := info.Object.DeepCopyObject()
-		if err := info.Get(); err != nil {
-			if !errors.IsNotFound(err) {
-				return err
+		for i := 1; i <= maxRetries; i++ {
+			if err = info.Get(); err != nil {
+				if !errors.IsNotFound(err) {
+					return err
+				}
+				info.Object = nil
 			}
-			info.Object = nil
-		}
 
-		obj := InfoObject{
-			LocalObj: local,
-			Info:     info,
-			Encoder:  scheme.DefaultJSONEncoder(),
-			OpenAPI:  schema,
-		}
+			force := i == maxRetries
+			if force {
+				klog.Warningf(
+					"Object (%v: %v) keeps changing, diffing without lock",
+					info.Object.GetObjectKind().GroupVersionKind(),
+					info.Name,
+				)
+			}
+			obj := InfoObject{
+				LocalObj: local,
+				Info:     info,
+				Encoder:  scheme.DefaultJSONEncoder(),
+				OpenAPI:  schema,
+				Force:    force,
+			}
 
-		return differ.Diff(obj, printer)
+			err = differ.Diff(obj, printer)
+			if !isConflict(err) {
+				break
+			}
+		}
+		return err
 	})
 	if err != nil {
 		return err
 	}
 
-	// Error ignore on purpose. diff(1) for example, returns an error if there is any diff.
-	_ = differ.Run(diff)
-
-	return nil
+	return differ.Run(diff)
 }

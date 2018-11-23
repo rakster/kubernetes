@@ -70,11 +70,9 @@ func TestNewValidJoin(t *testing.T) {
 
 	testCases := []struct {
 		name                  string
-		args                  []string
 		skipPreFlight         bool
 		cfgPath               string
 		configToWrite         string
-		featureGatesString    string
 		ignorePreflightErrors []string
 		testJoinValidate      bool
 		testJoinRun           bool
@@ -109,11 +107,6 @@ func TestNewValidJoin(t *testing.T) {
 			configToWrite:         testConfig,
 			ignorePreflightErrors: []string{"some-unsupported-preflight-arg"},
 			expectedError:         true,
-		},
-		{
-			name:               "invalid: incorrect featureGatesString",
-			featureGatesString: "bad-feature-gate-string",
-			expectedError:      true,
 		},
 		{
 			name:             "invalid: fail Join.Validate() with wrong flags",
@@ -163,7 +156,7 @@ func TestNewValidJoin(t *testing.T) {
 			}
 		}
 
-		join, err := NewValidJoin(cmd.PersistentFlags(), cfg, tc.args, tc.cfgPath, tc.featureGatesString, tc.ignorePreflightErrors)
+		join, err := NewValidJoin(cmd.PersistentFlags(), cfg, tc.cfgPath, tc.ignorePreflightErrors)
 
 		if tc.nodeConfig != nil {
 			join.cfg = tc.nodeConfig

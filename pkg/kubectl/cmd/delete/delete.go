@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/spf13/cobra"
+	"k8s.io/klog"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -32,10 +32,10 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions/printers"
 	"k8s.io/cli-runtime/pkg/genericclioptions/resource"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	kubectlwait "k8s.io/kubernetes/pkg/kubectl/cmd/wait"
 	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
+	"k8s.io/kubernetes/pkg/kubectl/util/templates"
 )
 
 var (
@@ -126,7 +126,7 @@ func NewCmdDelete(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra
 		Run: func(cmd *cobra.Command, args []string) {
 			o := deleteFlags.ToOptions(nil, streams)
 			cmdutil.CheckErr(o.Complete(f, args, cmd))
-			cmdutil.CheckErr(o.Validate(cmd))
+			cmdutil.CheckErr(o.Validate())
 			cmdutil.CheckErr(o.RunDelete())
 		},
 		SuggestFor: []string{"rm"},
@@ -194,9 +194,9 @@ func (o *DeleteOptions) Complete(f cmdutil.Factory, args []string, cmd *cobra.Co
 	return nil
 }
 
-func (o *DeleteOptions) Validate(cmd *cobra.Command) error {
+func (o *DeleteOptions) Validate() error {
 	if o.Output != "" && o.Output != "name" {
-		return cmdutil.UsageErrorf(cmd, "Unexpected -o output mode: %v. We only support '-o name'.", o.Output)
+		return fmt.Errorf("unexpected -o output mode: %v. We only support '-o name'.", o.Output)
 	}
 
 	if o.DeleteAll && len(o.LabelSelector) > 0 {
@@ -204,11 +204,6 @@ func (o *DeleteOptions) Validate(cmd *cobra.Command) error {
 	}
 	if o.DeleteAll && len(o.FieldSelector) > 0 {
 		return fmt.Errorf("cannot set --all and --field-selector at the same time")
-	}
-
-	if o.GracePeriod == 0 && !o.ForceDeletion && !o.WaitForDeletion {
-		// With the explicit --wait flag we need extra validation for backward compatibility
-		return fmt.Errorf("--grace-period=0 must have either --force specified, or --wait to be set to true")
 	}
 
 	switch {
@@ -264,7 +259,7 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 		responseMetadata, err := meta.Accessor(response)
 		if err != nil {
 			// we don't have UID, but we didn't fail the delete, next best thing is just skipping the UID
-			glog.V(1).Info(err)
+			klog.V(1).Info(err)
 			return nil
 		}
 		uidMap[resourceLocation] = responseMetadata.GetUID()
@@ -306,7 +301,7 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 	if errors.IsForbidden(err) || errors.IsMethodNotSupported(err) {
 		// if we're forbidden from waiting, we shouldn't fail.
 		// if the resource doesn't support a verb we need, we shouldn't fail.
-		glog.V(1).Info(err)
+		klog.V(1).Info(err)
 		return nil
 	}
 	return err

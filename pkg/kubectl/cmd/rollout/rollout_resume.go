@@ -27,11 +27,11 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions/printers"
 	"k8s.io/cli-runtime/pkg/genericclioptions/resource"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/set"
-	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/polymorphichelpers"
 	"k8s.io/kubernetes/pkg/kubectl/scheme"
 	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
+	"k8s.io/kubernetes/pkg/kubectl/util/templates"
 )
 
 // ResumeOptions is the start of the data required to perform the operation.  As new fields are added, add them here instead of
@@ -167,7 +167,7 @@ func (o ResumeOptions) RunResume() error {
 				allErrs = append(allErrs, err)
 				continue
 			}
-			if err = printer.PrintObj(cmdutil.AsDefaultVersionedOrOriginal(info.Object, info.Mapping), o.Out); err != nil {
+			if err = printer.PrintObj(info.Object, o.Out); err != nil {
 				allErrs = append(allErrs, err)
 			}
 			continue
@@ -185,7 +185,7 @@ func (o ResumeOptions) RunResume() error {
 			allErrs = append(allErrs, err)
 			continue
 		}
-		if err = printer.PrintObj(cmdutil.AsDefaultVersionedOrOriginal(info.Object, info.Mapping), o.Out); err != nil {
+		if err = printer.PrintObj(info.Object, o.Out); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}

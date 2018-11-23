@@ -19,8 +19,8 @@ package autoscale
 import (
 	"fmt"
 
-	"github.com/golang/glog"
 	"github.com/spf13/cobra"
+	"k8s.io/klog"
 
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -29,18 +29,20 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions/resource"
 	autoscalingv1client "k8s.io/client-go/kubernetes/typed/autoscaling/v1"
 	"k8s.io/kubernetes/pkg/kubectl"
-	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
+	"k8s.io/kubernetes/pkg/kubectl/generate"
+	generateversioned "k8s.io/kubernetes/pkg/kubectl/generate/versioned"
 	"k8s.io/kubernetes/pkg/kubectl/polymorphichelpers"
 	"k8s.io/kubernetes/pkg/kubectl/scheme"
 	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
+	"k8s.io/kubernetes/pkg/kubectl/util/templates"
 )
 
 var (
 	autoscaleLong = templates.LongDesc(i18n.T(`
 		Creates an autoscaler that automatically chooses and sets the number of pods that run in a kubernetes cluster.
 
-		Looks up a Deployment, ReplicaSet, or ReplicationController by name and creates an autoscaler that uses the given resource as a reference.
+		Looks up a Deployment, ReplicaSet, StatefulSet, or ReplicationController by name and creates an autoscaler that uses the given resource as a reference.
 		An autoscaler can automatically increase or decrease number of pods deployed within the system as needed.`))
 
 	autoscaleExample = templates.Examples(i18n.T(`
@@ -73,7 +75,7 @@ type AutoscaleOptions struct {
 	dryRun           bool
 	builder          *resource.Builder
 	canBeAutoscaled  polymorphichelpers.CanBeAutoscaledFunc
-	generatorFunc    func(string, *meta.RESTMapping) (kubectl.StructuredGenerator, error)
+	generatorFunc    func(string, *meta.RESTMapping) (generate.StructuredGenerator, error)
 
 	HPAClient autoscalingv1client.HorizontalPodAutoscalersGetter
 
@@ -114,7 +116,7 @@ func NewCmdAutoscale(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *
 	o.RecordFlags.AddFlags(cmd)
 	o.PrintFlags.AddFlags(cmd)
 
-	cmd.Flags().StringVar(&o.Generator, "generator", cmdutil.HorizontalPodAutoscalerV1GeneratorName, i18n.T("The name of the API generator to use. Currently there is only 1 generator."))
+	cmd.Flags().StringVar(&o.Generator, "generator", generateversioned.HorizontalPodAutoscalerV1GeneratorName, i18n.T("The name of the API generator to use. Currently there is only 1 generator."))
 	cmd.Flags().Int32Var(&o.Min, "min", -1, "The lower limit for the number of pods that can be set by the autoscaler. If it's not specified or negative, the server will apply a default value.")
 	cmd.Flags().Int32Var(&o.Max, "max", -1, "The upper limit for the number of pods that can be set by the autoscaler. Required.")
 	cmd.MarkFlagRequired("max")
@@ -147,17 +149,17 @@ func (o *AutoscaleOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args 
 	o.HPAClient = kubeClient.AutoscalingV1()
 
 	// get the generator
-	o.generatorFunc = func(name string, mapping *meta.RESTMapping) (kubectl.StructuredGenerator, error) {
+	o.generatorFunc = func(name string, mapping *meta.RESTMapping) (generate.StructuredGenerator, error) {
 		switch o.Generator {
-		case cmdutil.HorizontalPodAutoscalerV1GeneratorName:
-			return &kubectl.HorizontalPodAutoscalerGeneratorV1{
+		case generateversioned.HorizontalPodAutoscalerV1GeneratorName:
+			return &generateversioned.HorizontalPodAutoscalerGeneratorV1{
 				Name:               name,
 				MinReplicas:        o.Min,
 				MaxReplicas:        o.Max,
 				CPUPercent:         o.CpuPercent,
 				ScaleRefName:       name,
 				ScaleRefKind:       mapping.GroupVersionKind.Kind,
-				ScaleRefApiVersion: mapping.GroupVersionKind.GroupVersion().String(),
+				ScaleRefAPIVersion: mapping.GroupVersionKind.GroupVersion().String(),
 			}, nil
 		default:
 			return nil, cmdutil.UsageErrorf(cmd, "Generator %s not supported. ", o.Generator)
@@ -232,7 +234,7 @@ func (o *AutoscaleOptions) Run() error {
 		}
 
 		if err := o.Recorder.Record(hpa); err != nil {
-			glog.V(4).Infof("error recording current command: %v", err)
+			klog.V(4).Infof("error recording current command: %v", err)
 		}
 
 		if o.dryRun {

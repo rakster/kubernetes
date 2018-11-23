@@ -39,6 +39,7 @@ secondary-range-name = my-secondary-range
 node-tags = my-node-tag1
 node-instance-prefix = my-prefix
 multizone = true
+regional = true
    `
 	reader := strings.NewReader(s)
 	config, err := readConfig(reader)
@@ -57,6 +58,7 @@ multizone = true
 		NodeTags:           []string{"my-node-tag1"},
 		NodeInstancePrefix: "my-prefix",
 		Multizone:          true,
+		Regional:           true,
 	}}
 
 	if !reflect.DeepEqual(expected, config) {
@@ -89,7 +91,7 @@ func TestGetRegion(t *testing.T) {
 	if regionName != "us-central1" {
 		t.Errorf("Unexpected region from GetGCERegion: %s", regionName)
 	}
-	gce := &GCECloud{
+	gce := &Cloud{
 		localZone: zoneName,
 		region:    regionName,
 	}
@@ -297,7 +299,7 @@ func TestGetZoneByProviderID(t *testing.T) {
 		},
 	}
 
-	gce := &GCECloud{
+	gce := &Cloud{
 		localZone: "us-central1-f",
 		region:    "us-central1",
 	}
@@ -328,13 +330,14 @@ func TestGenerateCloudConfigs(t *testing.T) {
 		NodeTags:           []string{"node-tag"},
 		NodeInstancePrefix: "node-prefix",
 		Multizone:          false,
-		ApiEndpoint:        "",
+		Regional:           false,
+		APIEndpoint:        "",
 		LocalZone:          "us-central1-a",
 		AlphaFeatures:      []string{},
 	}
 
 	cloudBoilerplate := CloudConfig{
-		ApiEndpoint:        "",
+		APIEndpoint:        "",
 		ProjectID:          "project-id",
 		NetworkProjectID:   "",
 		Region:             "us-central1",
@@ -392,12 +395,12 @@ func TestGenerateCloudConfigs(t *testing.T) {
 			name: "Specified API Endpint",
 			config: func() ConfigGlobal {
 				v := configBoilerplate
-				v.ApiEndpoint = "https://www.googleapis.com/compute/staging_v1/"
+				v.APIEndpoint = "https://www.googleapis.com/compute/staging_v1/"
 				return v
 			},
 			cloud: func() CloudConfig {
 				v := cloudBoilerplate
-				v.ApiEndpoint = "https://www.googleapis.com/compute/staging_v1/"
+				v.APIEndpoint = "https://www.googleapis.com/compute/staging_v1/"
 				return v
 			},
 		},
@@ -442,6 +445,20 @@ func TestGenerateCloudConfigs(t *testing.T) {
 			},
 			cloud: func() CloudConfig {
 				v := cloudBoilerplate
+				v.ManagedZones = nil
+				return v
+			},
+		},
+		{
+			name: "Regional",
+			config: func() ConfigGlobal {
+				v := configBoilerplate
+				v.Regional = true
+				return v
+			},
+			cloud: func() CloudConfig {
+				v := cloudBoilerplate
+				v.Regional = true
 				v.ManagedZones = nil
 				return v
 			},

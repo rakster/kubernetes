@@ -29,6 +29,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/googleapis/gnostic/OpenAPIv2"
 	"github.com/spf13/cobra"
 
 	corev1 "k8s.io/api/core/v1"
@@ -52,7 +53,7 @@ import (
 )
 
 var (
-	fakeSchema                 = sptest.Fake{Path: filepath.Join("..", "..", "..", "api", "openapi-spec", "swagger.json")}
+	fakeSchema                 = sptest.Fake{Path: filepath.Join("..", "..", "..", "..", "api", "openapi-spec", "swagger.json")}
 	testingOpenAPISchemaFns    = []func() (openapi.Resources, error){nil, AlwaysErrorOpenAPISchemaFn, openAPISchemaFn}
 	AlwaysErrorOpenAPISchemaFn = func() (openapi.Resources, error) {
 		return nil, errors.New("cannot get openapi spec")
@@ -102,19 +103,24 @@ const (
 	filenameWidgetServerside = "../../../../test/fixtures/pkg/kubectl/cmd/apply/widget-serverside.yaml"
 )
 
-func readConfigMapList(t *testing.T, filename string) []byte {
+func readConfigMapList(t *testing.T, filename string) [][]byte {
 	data := readBytesFromFile(t, filename)
 	cmList := corev1.ConfigMapList{}
 	if err := runtime.DecodeInto(codec, data, &cmList); err != nil {
 		t.Fatal(err)
 	}
 
-	cmListBytes, err := runtime.Encode(codec, &cmList)
-	if err != nil {
-		t.Fatal(err)
+	var listCmBytes [][]byte
+
+	for _, cm := range cmList.Items {
+		cmBytes, err := runtime.Encode(codec, &cm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		listCmBytes = append(listCmBytes, cmBytes)
 	}
 
-	return cmListBytes
+	return listCmBytes
 }
 
 func readBytesFromFile(t *testing.T, filename string) []byte {
@@ -269,7 +275,7 @@ func walkMapPath(t *testing.T, start map[string]interface{}, path []string) map[
 
 func TestRunApplyPrintsValidObjectList(t *testing.T) {
 	cmdtesting.InitTestErrorHandler(t)
-	cmBytes := readConfigMapList(t, filenameCM)
+	configMapList := readConfigMapList(t, filenameCM)
 	pathCM := "/namespaces/test/configmaps"
 
 	tf := cmdtesting.NewTestFactory().WithNamespace("test")
@@ -279,12 +285,21 @@ func TestRunApplyPrintsValidObjectList(t *testing.T) {
 		NegotiatedSerializer: resource.UnstructuredPlusDefaultContentConfig().NegotiatedSerializer,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch p, m := req.URL.Path, req.Method; {
-			case strings.HasPrefix(p, pathCM) && m != "GET":
-				pod := ioutil.NopCloser(bytes.NewReader(cmBytes))
-				return &http.Response{StatusCode: 200, Header: cmdtesting.DefaultHeader(), Body: pod}, nil
-			case strings.HasPrefix(p, pathCM) && m != "PATCH":
-				pod := ioutil.NopCloser(bytes.NewReader(cmBytes))
-				return &http.Response{StatusCode: 200, Header: cmdtesting.DefaultHeader(), Body: pod}, nil
+			case strings.HasPrefix(p, pathCM) && m == "GET":
+				fallthrough
+			case strings.HasPrefix(p, pathCM) && m == "PATCH":
+				var body io.ReadCloser
+
+				switch p {
+				case pathCM + "/test0":
+					body = ioutil.NopCloser(bytes.NewReader(configMapList[0]))
+				case pathCM + "/test1":
+					body = ioutil.NopCloser(bytes.NewReader(configMapList[1]))
+				default:
+					t.Errorf("unexpected request to %s", p)
+				}
+
+				return &http.Response{StatusCode: 200, Header: cmdtesting.DefaultHeader(), Body: body}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -304,6 +319,16 @@ func TestRunApplyPrintsValidObjectList(t *testing.T) {
 	cmList := corev1.List{}
 	if err := runtime.DecodeInto(codec, buf.Bytes(), &cmList); err != nil {
 		t.Fatal(err)
+	}
+
+	if len(cmList.Items) != 2 {
+		t.Fatalf("Expected 2 items in the result; got %d", len(cmList.Items))
+	}
+	if !strings.Contains(string(cmList.Items[0].Raw), "key1") {
+		t.Fatalf("Did not get first ConfigMap at the first position")
+	}
+	if !strings.Contains(string(cmList.Items[1].Raw), "key2") {
+		t.Fatalf("Did not get second ConfigMap at the second position")
 	}
 }
 
@@ -1315,5 +1340,77 @@ func TestForceApply(t *testing.T) {
 				t.Fatalf("unexpected error output: %s", errBuf.String())
 			}
 		})
+	}
+}
+
+func TestDryRunVerifier(t *testing.T) {
+	dryRunVerifier := DryRunVerifier{
+		Finder: cmdutil.NewCRDFinder(func() ([]schema.GroupKind, error) {
+			return []schema.GroupKind{
+				{
+					Group: "crd.com",
+					Kind:  "MyCRD",
+				},
+				{
+					Group: "crd.com",
+					Kind:  "MyNewCRD",
+				},
+			}, nil
+		}),
+		OpenAPIGetter: &fakeSchema,
+	}
+
+	err := dryRunVerifier.HasSupport(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "NodeProxyOptions"})
+	if err == nil {
+		t.Fatalf("NodeProxyOptions doesn't support dry-run, yet no error found")
+	}
+
+	err = dryRunVerifier.HasSupport(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"})
+	if err != nil {
+		t.Fatalf("Pod should support dry-run: %v", err)
+	}
+
+	err = dryRunVerifier.HasSupport(schema.GroupVersionKind{Group: "crd.com", Version: "v1", Kind: "MyCRD"})
+	if err != nil {
+		t.Fatalf("MyCRD should support dry-run: %v", err)
+	}
+
+	err = dryRunVerifier.HasSupport(schema.GroupVersionKind{Group: "crd.com", Version: "v1", Kind: "Random"})
+	if err == nil {
+		t.Fatalf("Random doesn't support dry-run, yet no error found")
+	}
+}
+
+type EmptyOpenAPI struct{}
+
+func (EmptyOpenAPI) OpenAPISchema() (*openapi_v2.Document, error) {
+	return &openapi_v2.Document{}, nil
+}
+
+func TestDryRunVerifierNoOpenAPI(t *testing.T) {
+	dryRunVerifier := DryRunVerifier{
+		Finder: cmdutil.NewCRDFinder(func() ([]schema.GroupKind, error) {
+			return []schema.GroupKind{
+				{
+					Group: "crd.com",
+					Kind:  "MyCRD",
+				},
+				{
+					Group: "crd.com",
+					Kind:  "MyNewCRD",
+				},
+			}, nil
+		}),
+		OpenAPIGetter: EmptyOpenAPI{},
+	}
+
+	err := dryRunVerifier.HasSupport(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"})
+	if err == nil {
+		t.Fatalf("Pod doesn't support dry-run, yet no error found")
+	}
+
+	err = dryRunVerifier.HasSupport(schema.GroupVersionKind{Group: "crd.com", Version: "v1", Kind: "MyCRD"})
+	if err == nil {
+		t.Fatalf("MyCRD doesn't support dry-run, yet no error found")
 	}
 }
