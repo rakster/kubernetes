@@ -31,7 +31,7 @@ const APIServerExtraArgs = "apiserver-extra-args"
 // CertificatesDir flag sets the path where to save and read the certificates.
 const CertificatesDir = "cert-dir"
 
-// CfgPath flag sets the path to kubeadm config file. WARNING: Usage of a configuration file is experimental.
+// CfgPath flag sets the path to kubeadm config file.
 const CfgPath = "config"
 
 // ControllerManagerExtraArgs flag sets extra flags to pass to the Controller Manager or override default ones in form of <flagname>=<value>.
@@ -84,3 +84,18 @@ const CSROnly = "csr-only"
 
 // CSRDir flag sets the location for CSRs and flags to be output
 const CSRDir = "csr-dir"
+
+// TokenStr flag sets the token
+const TokenStr = "token"
+
+// TokenTTL flag sets the time to live for token
+const TokenTTL = "token-ttl"
+
+// TokenUsages flag sets the usages of the token
+const TokenUsages = "usages"
+
+// TokenGroups flag sets the authentication groups of the token
+const TokenGroups = "groups"
+
+// TokenDescription flag sets the description of the token
+const TokenDescription = "description"

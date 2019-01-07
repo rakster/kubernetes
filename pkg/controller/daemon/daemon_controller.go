@@ -31,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -55,9 +54,8 @@ import (
 	"k8s.io/kubernetes/pkg/controller/daemon/util"
 	"k8s.io/kubernetes/pkg/features"
 	kubelettypes "k8s.io/kubernetes/pkg/kubelet/types"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm"
 	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	"k8s.io/kubernetes/pkg/util/metrics"
 )
 
@@ -1011,7 +1009,7 @@ func (dsc *DaemonSetsController) syncNodes(ds *apps.DaemonSet, podsToDelete, nod
 	if err != nil {
 		generation = nil
 	}
-	template := util.CreatePodTemplate(ds.Namespace, ds.Spec.Template, generation, hash)
+	template := util.CreatePodTemplate(ds.Spec.Template, generation, hash)
 	// Batch the pod creates. Batch sizes start at SlowStartInitialBatchSize
 	// and double with each successful iteration in a kind of "slow start".
 	// This handles attempts to start large numbers of pods that would
@@ -1288,23 +1286,22 @@ func (dsc *DaemonSetsController) syncDaemonSet(key string) error {
 	return dsc.updateDaemonSetStatus(ds, hash, true)
 }
 
-func (dsc *DaemonSetsController) simulate(newPod *v1.Pod, node *v1.Node, ds *apps.DaemonSet) ([]algorithm.PredicateFailureReason, *schedulercache.NodeInfo, error) {
+func (dsc *DaemonSetsController) simulate(newPod *v1.Pod, node *v1.Node, ds *apps.DaemonSet) ([]predicates.PredicateFailureReason, *schedulernodeinfo.NodeInfo, error) {
 	objects, err := dsc.podNodeIndex.ByIndex("nodeName", node.Name)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	nodeInfo := schedulercache.NewNodeInfo()
+	nodeInfo := schedulernodeinfo.NewNodeInfo()
 	nodeInfo.SetNode(node)
 
 	for _, obj := range objects {
 		// Ignore pods that belong to the daemonset when taking into account whether a daemonset should bind to a node.
-		// TODO: replace this with metav1.IsControlledBy() in 1.12
 		pod, ok := obj.(*v1.Pod)
 		if !ok {
 			continue
 		}
-		if isControlledByDaemonSet(pod, ds.GetUID()) {
+		if metav1.IsControlledBy(pod, ds) {
 			continue
 		}
 		nodeInfo.AddPod(pod)
@@ -1420,7 +1417,7 @@ func NewPod(ds *apps.DaemonSet, nodeName string) *v1.Pod {
 	newPod.Spec.NodeName = nodeName
 
 	// Added default tolerations for DaemonSet pods.
-	util.AddOrUpdateDaemonPodTolerations(&newPod.Spec, kubelettypes.IsCriticalPod(newPod))
+	util.AddOrUpdateDaemonPodTolerations(&newPod.Spec)
 
 	return newPod
 }
@@ -1430,8 +1427,8 @@ func NewPod(ds *apps.DaemonSet, nodeName string) *v1.Pod {
 //   - PodFitsHost: checks pod's NodeName against node
 //   - PodMatchNodeSelector: checks pod's NodeSelector and NodeAffinity against node
 //   - PodToleratesNodeTaints: exclude tainted node unless pod has specific toleration
-func checkNodeFitness(pod *v1.Pod, meta algorithm.PredicateMetadata, nodeInfo *schedulercache.NodeInfo) (bool, []algorithm.PredicateFailureReason, error) {
-	var predicateFails []algorithm.PredicateFailureReason
+func checkNodeFitness(pod *v1.Pod, meta predicates.PredicateMetadata, nodeInfo *schedulernodeinfo.NodeInfo) (bool, []predicates.PredicateFailureReason, error) {
+	var predicateFails []predicates.PredicateFailureReason
 	fit, reasons, err := predicates.PodFitsHost(pod, meta, nodeInfo)
 	if err != nil {
 		return false, predicateFails, err
@@ -1460,8 +1457,8 @@ func checkNodeFitness(pod *v1.Pod, meta algorithm.PredicateMetadata, nodeInfo *s
 
 // Predicates checks if a DaemonSet's pod can be scheduled on a node using GeneralPredicates
 // and PodToleratesNodeTaints predicate
-func Predicates(pod *v1.Pod, nodeInfo *schedulercache.NodeInfo) (bool, []algorithm.PredicateFailureReason, error) {
-	var predicateFails []algorithm.PredicateFailureReason
+func Predicates(pod *v1.Pod, nodeInfo *schedulernodeinfo.NodeInfo) (bool, []predicates.PredicateFailureReason, error) {
+	var predicateFails []predicates.PredicateFailureReason
 
 	// If ScheduleDaemonSetPods is enabled, only check nodeSelector, nodeAffinity and toleration/taint match.
 	if utilfeature.DefaultFeatureGate.Enabled(features.ScheduleDaemonSetPods) {
@@ -1521,15 +1518,6 @@ func (o podByCreationTimestampAndPhase) Less(i, j int) bool {
 		return o[i].Name < o[j].Name
 	}
 	return o[i].CreationTimestamp.Before(&o[j].CreationTimestamp)
-}
-
-func isControlledByDaemonSet(p *v1.Pod, uuid types.UID) bool {
-	for _, ref := range p.OwnerReferences {
-		if ref.Controller != nil && *ref.Controller && ref.UID == uuid {
-			return true
-		}
-	}
-	return false
 }
 
 func failedPodsBackoffKey(ds *apps.DaemonSet, nodeName string) string {
