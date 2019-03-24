@@ -21,8 +21,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lithammer/dedent"
 	"github.com/pkg/errors"
-	"github.com/renstrom/dedent"
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"k8s.io/kubernetes/cmd/kubeadm/app/phases/certs"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/pkiutil"
@@ -146,29 +146,24 @@ func TestCmdInitConfig(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "can't load v1alpha1 config",
+			name:     "can't load old v1alpha1 config",
 			args:     "--config=testdata/init/v1alpha1.yaml",
 			expected: false,
 		},
 		{
-			name:     "can't load v1alpha2 config",
+			name:     "can't load old v1alpha2 config",
 			args:     "--config=testdata/init/v1alpha2.yaml",
 			expected: false,
 		},
 		{
-			name:     "can load v1alpha3 config",
+			name:     "can't load old v1alpha3 config",
 			args:     "--config=testdata/init/v1alpha3.yaml",
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "can load v1beta1 config",
 			args:     "--config=testdata/init/v1beta1.yaml",
 			expected: true,
-		},
-		{
-			name:     "don't allow mixed arguments v1alpha3",
-			args:     "--kubernetes-version=1.11.0 --config=testdata/init/v1alpha3.yaml",
-			expected: false,
 		},
 		{
 			name:     "don't allow mixed arguments v1beta1",

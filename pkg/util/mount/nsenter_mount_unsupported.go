@@ -22,7 +22,7 @@ import (
 	"errors"
 	"os"
 
-	"k8s.io/kubernetes/pkg/util/nsenter"
+	"k8s.io/utils/nsenter"
 )
 
 type NsenterMounter struct{}
@@ -91,18 +91,6 @@ func (*NsenterMounter) ExistsPath(pathname string) (bool, error) {
 
 func (*NsenterMounter) EvalHostSymlinks(pathname string) (string, error) {
 	return "", errors.New("not implemented")
-}
-
-func (*NsenterMounter) SafeMakeDir(pathname string, base string, perm os.FileMode) error {
-	return nil
-}
-
-func (*NsenterMounter) PrepareSafeSubpath(subPath Subpath) (newHostPath string, cleanupAction func(), err error) {
-	return subPath.Path, nil, nil
-}
-
-func (*NsenterMounter) CleanSubPaths(podDir string, volumeName string) error {
-	return nil
 }
 
 func (*NsenterMounter) GetMountRefs(pathname string) ([]string, error) {

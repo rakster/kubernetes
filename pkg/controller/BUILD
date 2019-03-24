@@ -85,10 +85,10 @@ go_library(
         "//staging/src/k8s.io/client-go/tools/cache:go_default_library",
         "//staging/src/k8s.io/client-go/tools/record:go_default_library",
         "//staging/src/k8s.io/client-go/tools/watch:go_default_library",
-        "//staging/src/k8s.io/client-go/util/integer:go_default_library",
         "//staging/src/k8s.io/client-go/util/retry:go_default_library",
         "//vendor/github.com/golang/groupcache/lru:go_default_library",
         "//vendor/k8s.io/klog:go_default_library",
+        "//vendor/k8s.io/utils/integer:go_default_library",
     ],
 )
 
@@ -136,6 +136,7 @@ filegroup(
         "//pkg/controller/volume/events:all-srcs",
         "//pkg/controller/volume/expand:all-srcs",
         "//pkg/controller/volume/persistentvolume:all-srcs",
+        "//pkg/controller/volume/protectionutil:all-srcs",
         "//pkg/controller/volume/pvcprotection:all-srcs",
         "//pkg/controller/volume/pvprotection:all-srcs",
     ],
